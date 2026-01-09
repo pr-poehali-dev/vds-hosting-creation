@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import { Progress } from '@/components/ui/progress';
+import { Label } from '@/components/ui/label';
 
 type ServerStatus = 'running' | 'stopped' | 'starting' | 'stopping' | 'rebooting';
 
@@ -16,6 +17,12 @@ interface FileItem {
   type: 'file' | 'folder';
   size?: string;
   modified?: string;
+  children?: FileItem[];
+}
+
+interface ConsoleMessage {
+  text: string;
+  type: 'command' | 'output' | 'success' | 'error';
 }
 
 const Index = () => {
@@ -28,16 +35,57 @@ const Index = () => {
   const [currentPath, setCurrentPath] = useState('/home/minecraft');
   const [selectedPlan, setSelectedPlan] = useState<any>(null);
   const [orderDialogOpen, setOrderDialogOpen] = useState(false);
+  const [authDialogOpen, setAuthDialogOpen] = useState(false);
+  const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [consoleInput, setConsoleInput] = useState('');
+  const [consoleMessages, setConsoleMessages] = useState<ConsoleMessage[]>([
+    { text: 'root@minecraft-server:~$', type: 'command' },
+    { text: '[Server thread/INFO]: Starting Minecraft server on *:25565', type: 'output' },
+    { text: '[Server thread/INFO]: Done! For help, type "help"', type: 'output' },
+    { text: '[Server thread/INFO]: Steve joined the game', type: 'success' },
+    { text: '[Server thread/INFO]: Alex joined the game', type: 'success' },
+  ]);
+  const consoleEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
-  const [files, setFiles] = useState<FileItem[]>([
+  const [fileSystem] = useState<FileItem[]>([
     { name: 'server.jar', type: 'file', size: '45.2 MB', modified: '2026-01-09' },
-    { name: 'world', type: 'folder', modified: '2026-01-09' },
-    { name: 'plugins', type: 'folder', modified: '2026-01-08' },
+    { 
+      name: 'world', 
+      type: 'folder', 
+      modified: '2026-01-09',
+      children: [
+        { name: 'level.dat', type: 'file', size: '2.1 KB', modified: '2026-01-09' },
+        { name: 'region', type: 'folder', modified: '2026-01-09', children: [] },
+        { name: 'data', type: 'folder', modified: '2026-01-09', children: [] },
+      ]
+    },
+    { 
+      name: 'plugins', 
+      type: 'folder', 
+      modified: '2026-01-08',
+      children: [
+        { name: 'EssentialsX.jar', type: 'file', size: '512 KB', modified: '2026-01-08' },
+        { name: 'WorldEdit.jar', type: 'file', size: '1.2 MB', modified: '2026-01-08' },
+        { name: 'LuckPerms.jar', type: 'file', size: '3.4 MB', modified: '2026-01-08' },
+      ]
+    },
     { name: 'server.properties', type: 'file', size: '1.2 KB', modified: '2026-01-09' },
     { name: 'eula.txt', type: 'file', size: '128 B', modified: '2026-01-05' },
-    { name: 'logs', type: 'folder', modified: '2026-01-09' }
+    { 
+      name: 'logs', 
+      type: 'folder', 
+      modified: '2026-01-09',
+      children: [
+        { name: 'latest.log', type: 'file', size: '45 KB', modified: '2026-01-09' },
+        { name: '2026-01-08.log.gz', type: 'file', size: '12 KB', modified: '2026-01-08' },
+      ]
+    }
   ]);
+
+  const [currentFolder, setCurrentFolder] = useState<FileItem[]>(fileSystem);
+  const [pathHistory, setPathHistory] = useState<FileItem[][]>([fileSystem]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -50,6 +98,80 @@ const Index = () => {
 
     return () => clearInterval(interval);
   }, [serverStatus]);
+
+  useEffect(() => {
+    consoleEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [consoleMessages]);
+
+  const handleConsoleCommand = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!consoleInput.trim()) return;
+
+    const command = consoleInput.trim();
+    setConsoleMessages(prev => [...prev, { text: `> ${command}`, type: 'command' }]);
+
+    const executeCommand = (cmd: string) => {
+      const parts = cmd.toLowerCase().split(' ');
+      const mainCmd = parts[0];
+
+      switch (mainCmd) {
+        case 'start':
+          if (serverStatus === 'stopped') {
+            handleServerStart();
+            return { text: '[Server] Starting server...', type: 'success' };
+          }
+          return { text: '[Server] Server is already running', type: 'error' };
+
+        case 'stop':
+          if (serverStatus === 'running') {
+            handleServerStop();
+            return { text: '[Server] Stopping server...', type: 'success' };
+          }
+          return { text: '[Server] Server is not running', type: 'error' };
+
+        case 'restart':
+          handleServerReboot();
+          return { text: '[Server] Restarting server...', type: 'success' };
+
+        case 'op':
+          if (parts[1]) {
+            return { text: `[Server] Made ${parts[1]} a server operator`, type: 'success' };
+          }
+          return { text: '[Server] Usage: op <player>', type: 'error' };
+
+        case 'gm':
+          const mode = parts[1] || 'survival';
+          const player = parts[2] || 'Steve';
+          return { text: `[Server] Set ${player}'s game mode to ${mode}`, type: 'success' };
+
+        case 'tps':
+          const tps = (19.8 + Math.random() * 0.4).toFixed(2);
+          return { text: `[Server] TPS from last 1m, 5m, 15m: ${tps}, ${tps}, ${tps}`, type: 'output' };
+
+        case 'plugman':
+          if (parts[1] === 'list') {
+            return { text: '[PlugMan] Plugins (3): EssentialsX, WorldEdit, LuckPerms', type: 'output' };
+          }
+          return { text: '[PlugMan] Usage: plugman list', type: 'error' };
+
+        case 'list':
+          return { text: '[Server] There are 2 of a max of 20 players online: Steve, Alex', type: 'output' };
+
+        case 'hub':
+          return { text: '[Server] Teleporting all players to hub...', type: 'success' };
+
+        case 'help':
+          return { text: 'Available: start, stop, restart, op, gm, tps, plugman, list, hub', type: 'output' };
+
+        default:
+          return { text: `[Server] Unknown command: ${mainCmd}. Type 'help' for help.`, type: 'error' };
+      }
+    };
+
+    const result = executeCommand(command);
+    setConsoleMessages(prev => [...prev, result]);
+    setConsoleInput('');
+  };
 
   const handleServerStart = () => {
     setServerStatus('starting');
@@ -115,7 +237,7 @@ const Index = () => {
         size: `${(file.size / 1024 / 1024).toFixed(2)} MB`,
         modified: new Date().toISOString().split('T')[0]
       };
-      setFiles(prev => [...prev, newFile]);
+      setCurrentFolder(prev => [...prev, newFile]);
       toast({
         title: "Файл загружен",
         description: `${file.name} успешно загружен`,
@@ -126,7 +248,7 @@ const Index = () => {
   const handleFileRename = (oldName: string) => {
     const newName = prompt('Введите новое имя файла:', oldName);
     if (newName && newName !== oldName) {
-      setFiles(prev => prev.map(f => f.name === oldName ? { ...f, name: newName } : f));
+      setCurrentFolder(prev => prev.map(f => f.name === oldName ? { ...f, name: newName } : f));
       toast({
         title: "Файл переименован",
         description: `${oldName} → ${newName}`,
@@ -136,7 +258,7 @@ const Index = () => {
 
   const handleFileDelete = (name: string) => {
     if (confirm(`Удалить ${name}?`)) {
-      setFiles(prev => prev.filter(f => f.name !== name));
+      setCurrentFolder(prev => prev.filter(f => f.name !== name));
       toast({
         title: "Файл удален",
         description: `${name} был удален`,
@@ -144,17 +266,76 @@ const Index = () => {
     }
   };
 
+  const openFolder = (folder: FileItem) => {
+    if (folder.children) {
+      setCurrentFolder(folder.children);
+      setPathHistory(prev => [...prev, folder.children!]);
+      const newPath = currentPath + '/' + folder.name;
+      setCurrentPath(newPath);
+    }
+  };
+
+  const goBack = () => {
+    if (pathHistory.length > 1) {
+      const newHistory = pathHistory.slice(0, -1);
+      setPathHistory(newHistory);
+      setCurrentFolder(newHistory[newHistory.length - 1]);
+      const pathParts = currentPath.split('/');
+      setCurrentPath(pathParts.slice(0, -1).join('/'));
+    }
+  };
+
   const handleOrderServer = (plan: any) => {
     setSelectedPlan(plan);
+    if (!isLoggedIn) {
+      setAuthDialogOpen(true);
+    } else {
+      setOrderDialogOpen(true);
+    }
+  };
+
+  const handleLogin = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    const email = formData.get('email');
+    
+    toast({
+      title: "Добро пожаловать!",
+      description: `Вы вошли как ${email}`,
+    });
+    setIsLoggedIn(true);
+    setAuthDialogOpen(false);
     setOrderDialogOpen(true);
   };
 
-  const confirmOrder = () => {
+  const handleGoogleAuth = () => {
     toast({
-      title: "Заказ принят!",
+      title: "Вход через Google",
+      description: "Перенаправление на Google OAuth...",
+    });
+    setTimeout(() => {
+      setIsLoggedIn(true);
+      setAuthDialogOpen(false);
+      setOrderDialogOpen(true);
+      toast({
+        title: "Добро пожаловать!",
+        description: "Вы успешно вошли через Google",
+      });
+    }, 1500);
+  };
+
+  const proceedToPayment = () => {
+    setOrderDialogOpen(false);
+    setPaymentDialogOpen(true);
+  };
+
+  const confirmPayment = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    toast({
+      title: "Оплата прошла успешно!",
       description: `Сервер ${selectedPlan.name} будет развернут в течение 5 минут. Домен: ser12.cybervds.net`,
     });
-    setOrderDialogOpen(false);
+    setPaymentDialogOpen(false);
   };
 
   const plans = [
@@ -420,29 +601,40 @@ const Index = () => {
                       <Progress value={startupProgress} className="h-2" />
                     </div>
                   )}
-                  <div className="bg-black rounded-lg p-6 font-mono text-sm h-[400px] overflow-auto border border-primary/30 shadow-[inset_0_0_20px_rgba(0,240,255,0.2)]">
-                    {serverStatus === 'stopped' ? (
-                      <div className="text-muted-foreground">Сервер остановлен. Нажмите "Запустить" для включения.</div>
-                    ) : serverStatus === 'starting' ? (
-                      <>
-                        <div className="text-primary">Starting Minecraft server...</div>
-                        <div className="text-green-400 mt-2">[Server] Loading world...</div>
-                        <div className="text-foreground/80 mt-1">[Server] Preparing spawn area: {startupProgress}%</div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="text-primary">root@minecraft-server:~$<span className="animate-pulse">_</span></div>
-                        <div className="text-green-400 mt-2">$ java -Xmx4G -Xms4G -jar server.jar</div>
-                        <div className="text-foreground/80 mt-1">[Server thread/INFO]: Starting Minecraft server on *:25565</div>
-                        <div className="text-foreground/80">[Server thread/INFO]: Done! For help, type "help"</div>
-                        <div className="text-primary mt-2">[Server thread/INFO]: <span className="text-secondary">Steve</span> joined the game</div>
-                        <div className="text-primary">[Server thread/INFO]: <span className="text-secondary">Alex</span> joined the game</div>
-                        <div className="text-muted-foreground mt-2">[Server] Tick rate: 20 TPS (100.0%)</div>
-                        <div className="text-muted-foreground">[Server] Players online: 2/20</div>
-                        <div className="text-primary mt-4">root@minecraft-server:~$<span className="animate-pulse">_</span></div>
-                      </>
-                    )}
+                  <div className="bg-black rounded-lg p-4 font-mono text-sm h-[350px] overflow-auto border border-primary/30 shadow-[inset_0_0_20px_rgba(0,240,255,0.2)]">
+                    {consoleMessages.map((msg, idx) => (
+                      <div 
+                        key={idx} 
+                        className={`${
+                          msg.type === 'command' ? 'text-primary' :
+                          msg.type === 'success' ? 'text-green-400' :
+                          msg.type === 'error' ? 'text-red-400' :
+                          'text-foreground/80'
+                        } mb-1`}
+                      >
+                        {msg.text}
+                      </div>
+                    ))}
+                    <div ref={consoleEndRef} />
                   </div>
+                  <form onSubmit={handleConsoleCommand} className="mt-3">
+                    <div className="flex gap-2">
+                      <Input 
+                        value={consoleInput}
+                        onChange={(e) => setConsoleInput(e.target.value)}
+                        placeholder="Введите команду (help для справки)..."
+                        className="font-mono bg-black border-primary/30 text-primary"
+                        disabled={serverStatus !== 'running'}
+                      />
+                      <Button 
+                        type="submit" 
+                        className="bg-primary hover:bg-primary/90"
+                        disabled={serverStatus !== 'running'}
+                      >
+                        <Icon name="Send" size={16} />
+                      </Button>
+                    </div>
+                  </form>
                 </CardContent>
               </Card>
 
@@ -522,10 +714,26 @@ const Index = () => {
             <Card className="bg-card/50 backdrop-blur-sm border-primary/30">
               <CardHeader>
                 <div className="flex items-center justify-between">
-                  <CardTitle className="flex items-center gap-2">
-                    <Icon name="Folder" className="text-primary" />
-                    Файловый менеджер
-                  </CardTitle>
+                  <div>
+                    <CardTitle className="flex items-center gap-2 mb-2">
+                      <Icon name="Folder" className="text-primary" />
+                      Файловый менеджер
+                    </CardTitle>
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      {pathHistory.length > 1 && (
+                        <Button 
+                          size="sm" 
+                          variant="ghost" 
+                          onClick={goBack}
+                          className="h-7 px-2"
+                        >
+                          <Icon name="ArrowLeft" size={14} className="mr-1" />
+                          Назад
+                        </Button>
+                      )}
+                      <span>{currentPath}</span>
+                    </div>
+                  </div>
                   <div className="flex gap-2">
                     <label htmlFor="file-upload">
                       <Button asChild>
@@ -543,14 +751,14 @@ const Index = () => {
                     />
                   </div>
                 </div>
-                <p className="text-sm text-muted-foreground">{currentPath}</p>
               </CardHeader>
               <CardContent>
                 <div className="space-y-2">
-                  {files.map((file, idx) => (
+                  {currentFolder.map((file, idx) => (
                     <div
                       key={idx}
-                      className="flex items-center justify-between p-3 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors border border-primary/10"
+                      className="flex items-center justify-between p-3 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors border border-primary/10 cursor-pointer"
+                      onClick={() => file.type === 'folder' && openFolder(file)}
                     >
                       <div className="flex items-center gap-3">
                         <Icon 
@@ -565,7 +773,7 @@ const Index = () => {
                           )}
                         </div>
                       </div>
-                      <div className="flex gap-2">
+                      <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
                         <Button 
                           size="sm" 
                           variant="ghost"
@@ -667,7 +875,7 @@ const Index = () => {
             <h1 className="text-2xl font-bold neon-glow cursor-pointer" onClick={() => setActiveSection('home')}>
               CYBER VDS
             </h1>
-            <div className="flex gap-6">
+            <div className="flex gap-6 items-center">
               {[
                 { id: 'home', label: 'Главная', icon: 'Home' },
                 { id: 'pricing', label: 'Тарифы', icon: 'DollarSign' },
@@ -685,6 +893,17 @@ const Index = () => {
                   <span className="hidden md:inline">{item.label}</span>
                 </button>
               ))}
+              {!isLoggedIn && (
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => setAuthDialogOpen(true)}
+                  className="border-primary text-primary"
+                >
+                  <Icon name="User" size={16} className="mr-2" />
+                  Войти
+                </Button>
+              )}
             </div>
           </div>
         </div>
@@ -718,6 +937,55 @@ const Index = () => {
         </div>
       </footer>
 
+      <Dialog open={authDialogOpen} onOpenChange={setAuthDialogOpen}>
+        <DialogContent className="bg-card border-primary/30">
+          <DialogHeader>
+            <DialogTitle className="text-2xl neon-glow">Вход в систему</DialogTitle>
+            <DialogDescription>
+              Войдите в аккаунт или зарегистрируйтесь
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleLogin} className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="email">Email</Label>
+              <Input 
+                id="email" 
+                name="email"
+                type="email" 
+                placeholder="example@mail.com" 
+                required
+                className="border-primary/30"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="password">Пароль</Label>
+              <Input 
+                id="password" 
+                name="password"
+                type="password" 
+                placeholder="••••••••" 
+                required
+                className="border-primary/30"
+              />
+            </div>
+            <div className="space-y-3">
+              <Button type="submit" className="w-full bg-primary text-primary-foreground">
+                Войти
+              </Button>
+              <Button 
+                type="button"
+                variant="outline" 
+                className="w-full border-secondary text-secondary"
+                onClick={handleGoogleAuth}
+              >
+                <Icon name="Chrome" size={16} className="mr-2" />
+                Войти через Google
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={orderDialogOpen} onOpenChange={setOrderDialogOpen}>
         <DialogContent className="bg-card border-primary/30">
           <DialogHeader>
@@ -748,10 +1016,80 @@ const Index = () => {
             <Button variant="outline" onClick={() => setOrderDialogOpen(false)}>
               Отмена
             </Button>
-            <Button onClick={confirmOrder} className="bg-primary text-primary-foreground">
-              Подтвердить заказ
+            <Button onClick={proceedToPayment} className="bg-primary text-primary-foreground">
+              Перейти к оплате
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={paymentDialogOpen} onOpenChange={setPaymentDialogOpen}>
+        <DialogContent className="bg-card border-primary/30">
+          <DialogHeader>
+            <DialogTitle className="text-2xl neon-glow">Оплата</DialogTitle>
+            <DialogDescription>
+              Введите данные для оплаты тарифа {selectedPlan?.name}
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={confirmPayment} className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="cardNumber">Номер карты</Label>
+              <Input 
+                id="cardNumber" 
+                name="cardNumber"
+                placeholder="1234 5678 9012 3456" 
+                required
+                className="border-primary/30"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="expiry">Срок действия</Label>
+                <Input 
+                  id="expiry" 
+                  name="expiry"
+                  placeholder="MM/YY" 
+                  required
+                  className="border-primary/30"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="cvv">CVV</Label>
+                <Input 
+                  id="cvv" 
+                  name="cvv"
+                  placeholder="123" 
+                  required
+                  className="border-primary/30"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="phone">Номер телефона</Label>
+              <Input 
+                id="phone" 
+                name="phone"
+                type="tel"
+                placeholder="+7 (999) 123-45-67" 
+                required
+                className="border-primary/30"
+              />
+            </div>
+            <div className="pt-4 border-t border-primary/20">
+              <div className="flex justify-between text-lg font-bold">
+                <span>К оплате:</span>
+                <span className="text-primary">{selectedPlan?.price}₽</span>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setPaymentDialogOpen(false)}>
+                Отмена
+              </Button>
+              <Button type="submit" className="bg-primary text-primary-foreground">
+                Оплатить
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
     </div>
