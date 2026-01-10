@@ -682,7 +682,7 @@ const Index = () => {
                     </div>
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">IP:</span>
-                      <span className="font-medium">192.168.1.100:25565</span>
+                      <span className="font-medium">195.201.204.247:25961</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">Версия:</span>
